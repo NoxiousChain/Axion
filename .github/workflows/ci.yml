@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+
+  # ── Python tests + CVE audit ───────────────────────────────────────────────
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest tacnet_sec/tests/ -v
+
+  python-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install pip-audit
+      # GHSA-jfh8-c2jp-g9dp: setuptools path-traversal in wheel install — not a
+      # runtime risk (we never install untrusted packages at runtime). Ignored
+      # until a fixed setuptools version lands in our pinned dep set.
+      - run: pip-audit -r requirements.txt --ignore-vuln GHSA-jfh8-c2jp-g9dp
+
+  # ── Rust unit tests ───────────────────────────────────────────────────────
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: capture
+      - name: Install libpcap (required by pnet)
+        run: sudo apt-get install -y libpcap-dev
+      - name: Rust unit tests
+        run: cargo test -p axion-capture
+        working-directory: capture
+
+  # ── Go tests (integration — requires Postgres) ────────────────────────────
+  go-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: axion
+          POSTGRES_PASSWORD: axion
+          POSTGRES_DB: axion_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U axion"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: server-go/go.sum
+      - name: Go tests
+        env:
+          DATABASE_URL: postgres://axion:axion@localhost:5432/axion_test?sslmode=disable
+        run: go test ./... -v
+        working-directory: server-go
+
+  # ── SvelteKit / Vitest unit tests ─────────────────────────────────────────
+  svelte-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+        working-directory: dashboard
+      - run: npm test
+        working-directory: dashboard

@@ -1,0 +1,32 @@
+[package]
+name = "axion-capture"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance packet capture and DDoS detection agent for Axion"
+
+[[bin]]
+name = "axion-capture"
+path = "src/main.rs"
+
+[dependencies]
+pnet        = "0.35"
+pnet_datalink = "0.35"
+tokio       = { version = "1", features = ["full"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+clap        = { version = "4", features = ["derive"] }
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow      = "1"
+rusqlite    = { version = "0.31", features = ["bundled"] }
+
+# eBPF support (opt-in with --features ebpf)
+aya         = { version = "0.13", optional = true }
+aya-log     = { version = "0.2",  optional = true }
+
+[features]
+ebpf = ["dep:aya", "dep:aya-log"]
+
+[build-dependencies]
+# Only needed when compiling the eBPF object; noop otherwise

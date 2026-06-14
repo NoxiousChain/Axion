@@ -1,0 +1,53 @@
+# ── Python ─────────────────────────────────────────────────────────────────
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Rust ───────────────────────────────────────────────────────────────────
+capture/target/
+
+# ── Go ─────────────────────────────────────────────────────────────────────
+server-go/vendor/
+server-go/*.exe
+server-go/axion-server
+
+# ── Node / SvelteKit ───────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/build/
+dashboard/.svelte-kit/
+
+# ── Secrets & local config ─────────────────────────────────────────────────
+.env
+*.env
+
+# ── TLS certificates ───────────────────────────────────────────────────────
+certs/*.key
+certs/*.crt
+certs/*.pem
+certs/*.csr
+certs/*.srl
+
+# ── Runtime data ───────────────────────────────────────────────────────────
+*.sqlite
+*.sqlite-journal
+*.db
+data/
+
+# ── OS / editor artifacts ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── AI tooling ─────────────────────────────────────────────────────────────
+CLAUDE.md

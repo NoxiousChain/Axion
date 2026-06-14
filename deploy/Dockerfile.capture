@@ -1,0 +1,32 @@
+# ─── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM rust:1.79-alpine AS builder
+
+RUN apk add --no-cache musl-dev libpcap-dev pkgconfig clang llvm libbpf-dev linux-headers
+
+WORKDIR /build
+COPY capture/ .
+
+# Standard (pnet) build — no eBPF bytecode required for live/simulate modes
+RUN cargo build --release -p axion-capture
+
+# ─── Stage 2: Runtime ────────────────────────────────────────────────────────
+FROM alpine:3.20
+
+RUN apk add --no-cache libpcap libgcc
+
+# Non-root user
+RUN addgroup -S axion && adduser -S -G axion axion
+
+COPY --from=builder /build/target/release/axion-capture /usr/local/bin/axion-capture
+
+# Persistent queue volume
+VOLUME ["/data"]
+
+USER axion
+
+ENV AXION_SERVER_URL=http://server-go:8000
+ENV AXION_NODE_ID=node-001
+ENV AXION_QUEUE_DB=/data/pending_alerts.sqlite
+
+ENTRYPOINT ["axion-capture"]
+CMD ["--mode", "simulate"]

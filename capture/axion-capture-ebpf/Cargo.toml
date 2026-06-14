@@ -1,0 +1,20 @@
+[package]
+name = "axion-capture-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+# This crate compiles to BPF bytecode (bpfel-unknown-none target).
+# Build with: cargo build -p axion-capture-ebpf --release \
+#               --target bpfel-unknown-none -Z build-std=core
+
+[[bin]]
+name = "axion-capture-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf     = "0.1"
+aya-log-ebpf = "0.1"
+
+[profile.release]
+opt-level = 3
+lto       = true

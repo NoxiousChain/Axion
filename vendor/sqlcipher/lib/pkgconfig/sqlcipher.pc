@@ -1,0 +1,13 @@
+# Package Information for pkg-config
+
+prefix=/Users/kps78/Library/CloudStorage/OneDrive-DrexelUniversity/Desktop/Axion/vendor/sqlcipher
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: SQLCipher
+Description: SQL database engine
+Version: 3.46.1
+Libs: -L${libdir} -lsqlcipher
+Libs.private: -lz 
+Cflags: -I${includedir}/sqlcipher

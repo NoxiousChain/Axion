@@ -1,0 +1,117 @@
+# Axion — multi-language compose
+#
+# Services:
+#   postgres     — PostgreSQL 16 (server-side persistent store)
+#   server-go    — Go alert-ingest API  (replaces Python FastAPI server)
+#   capture      — Rust packet capture + DDoS detector (edge agent)
+#   server       — Python FastAPI server (malware/insider/IoT detectors; kept for Tier-3 features)
+#
+# Quick start (no TLS):
+#   AXION_API_KEY=dev-key AXION_ADMIN_PASSWORD=changeme docker compose up
+#
+# With TLS, set AXION_TLS_CERT / AXION_TLS_KEY env vars pointing to mounted cert files.
+
+services:
+
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: axion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     axion
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       axion
+    volumes:
+      - axion-pg-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Go alert-ingest server ──────────────────────────────────────────────
+  server-go:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.server-go
+    image: axion-server-go:latest
+    container_name: axion-server-go
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      AXION_API_KEY:      ${AXION_API_KEY}
+      AXION_ADMIN_PASSWORD: ${AXION_ADMIN_PASSWORD}
+      DATABASE_URL:       postgres://axion:${POSTGRES_PASSWORD}@postgres:5432/axion?sslmode=disable
+      AXION_TLS_CERT:     ${AXION_TLS_CERT:-}
+      AXION_TLS_KEY:      ${AXION_TLS_KEY:-}
+      AXION_CORS_ORIGINS: ${AXION_CORS_ORIGINS:-}
+      GIN_MODE:           release
+    volumes:
+      - ./certs:/certs:ro
+      - ./dashboard/build:/app/dashboard/build:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─── Rust capture agent (simulate mode by default) ───────────────────────
+  capture:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.capture
+    image: axion-capture:latest
+    container_name: axion-capture
+    restart: unless-stopped
+    depends_on:
+      server-go:
+        condition: service_healthy
+    environment:
+      AXION_API_KEY:    ${AXION_API_KEY}
+      AXION_SERVER_URL: http://server-go:8000
+      AXION_NODE_ID:    ${AXION_NODE_ID:-node-001}
+      AXION_QUEUE_DB:   /data/pending_alerts.sqlite
+    volumes:
+      - axion-capture-data:/data
+    command: ["--mode", "simulate"]
+
+  # ─── Python server (Tier-3 detectors, kept alongside Go server) ──────────
+  server:
+    build: .
+    image: axion-server:latest
+    container_name: axion-server-py
+    restart: unless-stopped
+    depends_on:
+      server-go:
+        condition: service_healthy
+    environment:
+      AXION_API_KEY:        ${AXION_API_KEY}
+      AXION_ADMIN_PASSWORD: ${AXION_ADMIN_PASSWORD:-}
+      TACNET_SERVER_DB:     /data/server_alerts.sqlite
+      AXION_DB_KEY:         ${AXION_DB_KEY:-}
+      AXION_SIEM_TYPE:      ${AXION_SIEM_TYPE:-none}
+    volumes:
+      - axion-py-data:/data
+      - ./certs:/certs:ro
+    ports:
+      - "8001:8000"
+    command: >
+      python -m tacnet_sec.server.api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  axion-pg-data:
+  axion-capture-data:
+  axion-py-data:

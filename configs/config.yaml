@@ -1,0 +1,88 @@
+# Axion Edge Agent - Config (Tailored for low-bandwidth / intermittent links)
+
+agent:
+  node_id: "node-001"
+  location: "edge-platoon-a"
+  dry_run_block: true        # keep 'true' unless you wire enforcement safely
+  forward_alerts: true       # forward alerts to central server (when reachable)
+  # Persistent queue: alerts survive agent crashes when server is unreachable.
+  # Set to a writable path; leave empty ("") to use the in-memory queue (dev only).
+  queue_db: ""               # e.g. /var/lib/axion/pending_alerts.sqlite
+
+capture:
+  mode: "simulate"           # simulate | live | pcap | netflow
+  iface: "eth0"              # used for 'live' mode
+  pcap_file: "sample.pcap"   # used for 'pcap' mode (provide your path)
+  netflow_udp_port: 2055     # used for 'netflow' mode (UDP listener)
+
+store:
+  path: "alerts.sqlite"
+
+server:
+  ingest_url: "http://127.0.0.1:8000/api/alerts"
+  timeout_seconds: 2
+  # API key — prefer injecting via env var rather than hardcoding here.
+  # Set AXION_API_KEY on the server; set api_key here only for the agent.
+  api_key: "axion-dev-key"
+  # TLS verification: path to CA cert, or false to skip (dev only).
+  ca_cert: false
+  # mTLS client certificate — both required to enable mutual TLS.
+  # Generate: openssl genrsa -out certs/agent.key 2048 && openssl req ...
+  # Start server with: --ssl-client-ca certs/ca.crt
+  client_cert: ""            # path to agent client cert (PEM), e.g. certs/agent.crt
+  client_key: ""             # path to agent client key  (PEM), e.g. certs/agent.key
+  batch: false
+
+# SIEM integration — send alerts and audit events to an external collector.
+# type: syslog   → RFC 5424 UDP to host:port
+# type: webhook  → HTTP POST JSON to url (Splunk HEC, Elastic, etc.)
+# type: none     → disabled
+siem:
+  type: none
+  host: "localhost"          # syslog: target host
+  port: 514                  # syslog: UDP port
+  url: ""                    # webhook: full URL (e.g. https://splunk:8088/services/collector)
+  token: ""                  # webhook: Authorization Bearer token
+  timeout_seconds: 5
+
+# Global alert throttling.
+throttle:
+  cooldown_seconds: 30
+
+# Learned-baseline anomaly detection (EWMA + z-score).
+anomaly:
+  enable: true
+  alpha: 0.1                 # EWMA smoothing; ~10 samples of effective memory
+  z_threshold: 3.0           # how many sigmas above baseline to alert
+  cold_start_samples: 20     # DDoS: bucket count before scoring starts
+  min_std_ddos: 2.0          # floor on std for DDoS (packets/bucket)
+  min_std_insider: 1048576   # floor on std for Insider (bytes); 1 MiB
+  # Baseline persistence: survives agent restarts. Leave empty to disable.
+  baseline_dir: ""           # e.g. /var/lib/axion/baselines
+
+ddos:
+  window_seconds: 8
+  pkt_rate_threshold: 120
+  unique_src_entropy_min: 2.3
+  unique_dst_entropy_min: 1.8
+  enable: true
+
+malware:
+  known_bad_hashes: ["44d88612fea8a8f36de82e1278abb02f"]
+  suspicious_proc_names: ["mimikatz.exe", "nc.exe", "powershell.exe"]
+  dns_tunnel_minlen: 45
+  enable: true
+
+insider:
+  baseline_hours: [6, 20]
+  max_data_mb_per_hour: 120
+  new_host_contact_threshold: 35
+  enable: true
+
+iot:
+  allowed_services:
+    "camera-*": ["tcp/554", "udp/554", "tcp/443"]
+    "sensor-*": ["udp/5683", "tcp/8883"]
+    "edge-gw*": ["tcp/22", "tcp/443", "udp/1194"]
+  weak_creds_usernames: ["admin", "root"]
+  enable: true

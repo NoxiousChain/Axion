@@ -1,0 +1,47 @@
+[Unit]
+Description=Axion Central Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=axion
+Group=axion
+WorkingDirectory=/opt/axion
+EnvironmentFile=/etc/axion/server.env
+ExecStart=/opt/axion/venv/bin/python -m tacnet_sec.server.api \
+    --ssl-certfile /etc/axion/certs/server.crt \
+    --ssl-keyfile  /etc/axion/certs/server.key
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=15s
+WatchdogSec=30s
+NotifyAccess=main
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=80%
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/axion
+
+[Install]
+WantedBy=multi-user.target

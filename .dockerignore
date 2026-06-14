@@ -1,0 +1,44 @@
+# ── Version control ────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+tacnet_sec/tests/
+
+# ── Rust ───────────────────────────────────────────────────────────────────
+capture/target/
+
+# ── Node / SvelteKit ───────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/.svelte-kit/
+
+# ── Secrets & runtime data — never bake into image ─────────────────────────
+.env
+*.env
+*.sqlite
+*.sqlite-journal
+*.db
+
+# ── TLS certs — mounted at runtime via volume ──────────────────────────────
+certs/
+
+# ── OS / editor artifacts ──────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,31 @@
+# ─── Stage 0: Build SvelteKit dashboard ──────────────────────────────────────
+FROM node:20-alpine AS dashboard-builder
+
+WORKDIR /dashboard
+COPY dashboard/package*.json ./
+RUN npm ci --prefer-offline
+COPY dashboard/ ./
+RUN npm run build
+
+# ─── Stage 1: Build Go binary ─────────────────────────────────────────────────
+FROM golang:1.22-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /build
+COPY server-go/ .
+
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o axion-server .
+
+# ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /build/axion-server /axion-server
+COPY --from=dashboard-builder /dashboard/build /app/dashboard/build
+
+EXPOSE 8000
+
+ENV GIN_MODE=release
+
+ENTRYPOINT ["/axion-server"]

@@ -1,0 +1,3 @@
+[workspace]
+members = ["axion-capture", "axion-capture-ebpf"]
+resolver = "2"
