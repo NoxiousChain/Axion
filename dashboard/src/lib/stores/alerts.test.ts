@@ -194,35 +194,40 @@ describe('WebSocket connectivity', () => {
 // ─── apiGet / apiPost ──────────────────────────────────────────────────────
 
 describe('API helpers', () => {
-  import('./alerts').then(({ apiGet, apiPost }) => {
-    it('apiGet sets Authorization header', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: 'ok' }),
-      } as any);
+  beforeEach(() => {
+    global.fetch = vi.fn();
+  });
 
-      await apiGet('/api/alerts', 'my-token');
-      const [, init] = (global.fetch as any).mock.calls[0];
-      expect(init.headers['Authorization']).toBe('Bearer my-token');
+  it('apiGet sets Authorization header', async () => {
+    const { apiGet } = await import('./alerts');
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: 'ok' }),
     });
 
-    it('apiGet throws on non-ok response', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: false, status: 401, statusText: 'Unauthorized',
-      } as any);
+    await apiGet('/api/alerts', 'my-token');
+    const [, init] = (global.fetch as any).mock.calls[0];
+    expect(init.headers['Authorization']).toBe('Bearer my-token');
+  });
 
-      await expect(apiGet('/api/alerts', 'bad-token')).rejects.toThrow('401');
+  it('apiGet throws on non-ok response', async () => {
+    const { apiGet } = await import('./alerts');
+    (global.fetch as any).mockResolvedValue({
+      ok: false, status: 401, statusText: 'Unauthorized',
     });
 
-    it('apiPost serialises body as JSON', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({}),
-      } as any);
+    await expect(apiGet('/api/alerts', 'bad-token')).rejects.toThrow('401');
+  });
 
-      await apiPost('/api/login', '', { username: 'admin' });
-      const [, init] = (global.fetch as any).mock.calls[0];
-      expect(JSON.parse(init.body).username).toBe('admin');
+  it('apiPost serialises body as JSON', async () => {
+    const { apiPost } = await import('./alerts');
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
     });
+
+    await apiPost('/api/login', '', { username: 'admin' });
+    const [, init] = (global.fetch as any).mock.calls[0];
+    expect(JSON.parse(init.body).username).toBe('admin');
   });
 });
