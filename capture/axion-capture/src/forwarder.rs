@@ -106,9 +106,10 @@ impl Forwarder {
                  WHERE delivered = 0 AND attempts < 10
                    AND ts > unixepoch() - 72*3600",
             )?;
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            let x = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .filter_map(|r| r.ok())
-                .collect()
+                .collect();
+            x
         };
 
         for (id, payload) in ids_and_payloads {
