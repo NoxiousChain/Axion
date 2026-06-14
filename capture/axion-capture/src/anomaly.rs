@@ -48,7 +48,7 @@ impl EwmaTracker {
         s.variance = a * dev * dev + (1.0 - a) * s.variance;
 
         let std_dev = s.variance.sqrt().max(1e-10);
-        let z = (value - s.mean).abs() / std_dev;
+        let z = (value - prev_mean).abs() / std_dev;
         z > self.z_threshold
     }
 }
