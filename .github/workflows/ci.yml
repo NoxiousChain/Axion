@@ -20,7 +20,7 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get install -y libsqlcipher-dev
       - run: pip install -r requirements.txt
-      - run: pytest tacnet_sec/tests/ -v
+      - run: PYTHONPATH=. pytest tacnet_sec/tests/ -v
 
   python-audit:
     runs-on: ubuntu-latest
