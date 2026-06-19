@@ -21,11 +21,14 @@ store:
 server:
   ingest_url: "http://127.0.0.1:8000/api/alerts"
   timeout_seconds: 2
-  # API key — prefer injecting via env var rather than hardcoding here.
-  # Set AXION_API_KEY on the server; set api_key here only for the agent.
-  api_key: "axion-dev-key"
-  # TLS verification: path to CA cert, or false to skip (dev only).
-  ca_cert: false
+  # API key — required. Prefer injecting via AXION_API_KEY env var (env takes precedence).
+  # Leaving this empty causes the agent to fail-fast with a clear error at startup.
+  # For local dev only: set AXION_API_KEY=axion-dev-key in your shell or .env file.
+  api_key: ""
+  # TLS verification: path to CA cert bundle (PEM), or false to skip (dev only — insecure).
+  # Production MUST point to the CA that signed the server certificate.
+  # Example: ca_cert: "certs/ca.crt"
+  ca_cert: true
   # mTLS client certificate — both required to enable mutual TLS.
   # Generate: openssl genrsa -out certs/agent.key 2048 && openssl req ...
   # Start server with: --ssl-client-ca certs/ca.crt
@@ -72,6 +75,12 @@ malware:
   suspicious_proc_names: ["mimikatz.exe", "nc.exe", "powershell.exe"]
   dns_tunnel_minlen: 45
   enable: true
+  # L1: IOC enrichment — path to a JSON file with known-bad network indicators.
+  # Format: {"ips": ["1.2.3.4"], "domains": ["evil.com"], "cidrs": ["10.0.0.0/8"]}
+  # Update the file and restart to reload. Compatible with Abuse.ch / CISA KEV exports.
+  ioc_file: ""
+  # Static known-bad CIDR ranges appended to any file-loaded networks.
+  ioc_ip_ranges: []
 
 insider:
   baseline_hours: [6, 20]
@@ -85,4 +94,33 @@ iot:
     "sensor-*": ["udp/5683", "tcp/8883"]
     "edge-gw*": ["tcp/22", "tcp/443", "udp/1194"]
   weak_creds_usernames: ["admin", "root"]
+  enable: true
+
+# Port scan detection (H5-a): flags sources that contact many distinct ports
+# within a short window, catching low-and-slow scans that evade DDoS thresholds.
+portscan:
+  window_seconds: 10          # rolling observation window per source IP
+  port_threshold: 15          # distinct dst ports before alerting
+  enable: true
+
+# C2 beaconing detection (H5-b): flags (src, dst) pairs with highly regular
+# connection intervals — low coefficient of variation (std/mean) indicates
+# automated, clock-driven outbound C2 communication.
+beaconing:
+  min_observations: 5         # minimum connections before scoring
+  cv_threshold: 0.20          # flag when CV < this (0 = perfectly regular)
+  max_beacon_interval_seconds: 300  # ignore very slow beacons (> 5 min)
+  window_seconds: 600         # rolling window to collect intervals
+  enable: true
+
+# Lateral movement detection (H5-c): flags source IPs observed on multiple
+# distinct sensor nodes within a time window.
+lateral_movement:
+  window_seconds: 300         # rolling window per source IP
+  node_threshold: 2           # distinct nodes before alerting
+  enable: true
+
+# ARP spoofing detection (H5-d): flags IP → MAC binding changes.
+# Requires capture layer to publish "arp_event" bus events.
+arp:
   enable: true

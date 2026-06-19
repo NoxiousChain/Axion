@@ -11,7 +11,6 @@ inter-test state pollution.
 
 from __future__ import annotations
 
-import sqlite3
 import time
 
 import pytest
@@ -21,21 +20,17 @@ _ADMIN_PW = "AdminPass123!"
 
 
 @pytest.fixture
-def api_mod_db(tmp_path):
+def api_mod_db(tmp_path, monkeypatch):
     import tacnet_sec.server.api as api_mod
-    from tacnet_sec.server.auth import hash_password
+
+    # Ensure init_db() — including the FastAPI startup handler — always seeds
+    # the admin account with _ADMIN_PW regardless of what .env exports.
+    monkeypatch.setenv("AXION_ADMIN_PASSWORD", _ADMIN_PW)
 
     db_path = str(tmp_path / "tier3.sqlite")
     api_mod.DB_PATH = db_path
     api_mod._API_KEY = _TEST_API_KEY
     api_mod.init_db()
-
-    # Set a known admin password.
-    conn = sqlite3.connect(db_path)
-    conn.execute("UPDATE users SET password_hash=? WHERE username='admin'",
-                 (hash_password(_ADMIN_PW),))
-    conn.commit()
-    conn.close()
     yield api_mod
     api_mod._API_KEY = None
 
@@ -62,7 +57,7 @@ def test_lockout_triggers_after_max_failures(api_mod_db):
     from tacnet_sec.server.auth import create_token, hash_password
 
     # Create a fresh user to lock out.
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
         ("lockme", hash_password("Password1!"), "analyst", time.time()),
@@ -90,7 +85,7 @@ def test_admin_unlock_clears_lockout(api_mod_db):
     from fastapi.testclient import TestClient
     from tacnet_sec.server.auth import create_token, hash_password
 
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
         ("lockme2", hash_password("Password1!"), "analyst", time.time()),
@@ -127,7 +122,7 @@ def test_non_admin_cannot_unlock(api_mod_db):
     from fastapi.testclient import TestClient
     from tacnet_sec.server.auth import create_token, hash_password
 
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
         ("operatorX", hash_password("Password1!"), "operator", time.time()),
@@ -157,7 +152,7 @@ def test_totp_enrol_returns_secret_and_uri(api_mod_db):
     from fastapi.testclient import TestClient
     from tacnet_sec.server.auth import hash_password
 
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
         ("mfauser", hash_password("Password1!"), "operator", time.time()),
@@ -188,7 +183,7 @@ def test_totp_login_fails_without_otp(api_mod_db):
     from tacnet_sec.server.auth import hash_password
     import pyotp
 
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     secret = pyotp.random_base32()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at, totp_secret) VALUES (?,?,?,?,?)",
@@ -213,7 +208,7 @@ def test_totp_login_succeeds_with_valid_otp(api_mod_db):
     from tacnet_sec.server.auth import hash_password
 
     secret = pyotp.random_base32()
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at, totp_secret) VALUES (?,?,?,?,?)",
         ("mfauser3", hash_password("Password1!"), "operator", time.time(), secret),
@@ -237,7 +232,7 @@ def test_totp_login_fails_with_wrong_otp(api_mod_db):
     from tacnet_sec.server.auth import hash_password
 
     secret = pyotp.random_base32()
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at, totp_secret) VALUES (?,?,?,?,?)",
         ("mfauser4", hash_password("Password1!"), "operator", time.time(), secret),
@@ -260,7 +255,7 @@ def test_totp_disable_allows_login_without_otp(api_mod_db):
     from tacnet_sec.server.auth import hash_password
 
     secret = pyotp.random_base32()
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at, totp_secret) VALUES (?,?,?,?,?)",
         ("mfauser5", hash_password("Password1!"), "operator", time.time(), secret),
@@ -303,7 +298,7 @@ def test_delete_existing_user_succeeds(api_mod_db):
     from fastapi.testclient import TestClient
     from tacnet_sec.server.auth import hash_password
 
-    conn = __import__("sqlite3").connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
         ("tobedeleted", hash_password("Password1!"), "analyst", time.time()),

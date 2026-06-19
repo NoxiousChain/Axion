@@ -128,9 +128,10 @@ describe('WebSocket connectivity', () => {
     expect(get(wsStatus)).toBe('connecting');
   });
 
-  it('sets wsStatus to connected on ws.onopen', () => {
+  it('sets wsStatus to connected after auth_ok message', () => {
     connectWS('test-token');
     mockWS.onopen();
+    mockWS.onmessage({ data: JSON.stringify({ type: 'auth_ok' }) });
     expect(get(wsStatus)).toBe('connected');
   });
 
@@ -185,9 +186,13 @@ describe('WebSocket connectivity', () => {
     expect(mockWS.close).toHaveBeenCalled();
   });
 
-  it('includes token in ws URL', () => {
+  it('sends token as first message after onopen, not in URL', () => {
     connectWS('my-jwt-token');
-    expect(wsConstructorArgs[0]).toContain('my-jwt-token');
+    expect(wsConstructorArgs[0]).not.toContain('my-jwt-token');
+    mockWS.onopen();
+    expect(mockWS.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'auth', token: 'my-jwt-token' })
+    );
   });
 });
 

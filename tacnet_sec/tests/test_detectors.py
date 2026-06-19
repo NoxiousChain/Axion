@@ -181,9 +181,11 @@ def test_dedupe_key_separation(store):
 
 def test_store_migration_adds_node_id_column(tmp_path):
     """Old databases without node_id should be upgraded transparently."""
-    import sqlite3
+    from tacnet_sec.core import store as store_mod
     path = tmp_path / "legacy.sqlite"
-    conn = sqlite3.connect(str(path))
+    # Use the same db module and key as AlertStore so the file format matches.
+    conn = store_mod._db_module.connect(str(path))
+    store_mod._apply_key(conn)
     conn.execute(
         "CREATE TABLE alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "ts REAL, detector TEXT, severity TEXT, title TEXT, details TEXT)"

@@ -1,9 +1,23 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::time::Duration;
 use tracing::{info, warn};
+
+/// TLS configuration for the HTTP forwarder (L3).
+/// All fields are optional; unset fields fall back to system defaults.
+#[derive(Debug, Default)]
+pub struct TlsConfig {
+    /// Path to a PEM-encoded CA certificate to trust for server verification.
+    /// When unset the OS trust store is used.
+    pub ca_cert_path: Option<String>,
+    /// Path to the PEM-encoded client certificate for mTLS.
+    /// Both `client_cert_path` and `client_key_path` must be set to enable mTLS.
+    pub client_cert_path: Option<String>,
+    /// Path to the PEM-encoded private key corresponding to `client_cert_path`.
+    pub client_key_path: Option<String>,
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Alert {
@@ -31,10 +45,37 @@ impl Forwarder {
         api_key: String,
         node_id: String,
         db_path: Option<String>,
+        tls: TlsConfig,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()?;
+        let mut builder = Client::builder().timeout(Duration::from_secs(10));
+
+        // L3: custom CA certificate for server verification.
+        if let Some(ref ca_path) = tls.ca_cert_path {
+            let ca_pem = std::fs::read(ca_path)
+                .with_context(|| format!("reading CA cert {ca_path}"))?;
+            let cert = reqwest::Certificate::from_pem(&ca_pem)
+                .context("parsing CA certificate")?;
+            builder = builder.add_root_certificate(cert);
+            info!(ca = %ca_path, "Custom CA certificate loaded");
+        }
+
+        // L3: client certificate for mTLS. reqwest::Identity::from_pem expects
+        // the cert and key concatenated in a single PEM buffer.
+        if let (Some(ref cert_path), Some(ref key_path)) =
+            (tls.client_cert_path, tls.client_key_path)
+        {
+            let mut pem = std::fs::read(cert_path)
+                .with_context(|| format!("reading client cert {cert_path}"))?;
+            let key_pem = std::fs::read(key_path)
+                .with_context(|| format!("reading client key {key_path}"))?;
+            pem.extend_from_slice(&key_pem);
+            let identity = reqwest::Identity::from_pem(&pem)
+                .context("building mTLS identity from cert+key PEM")?;
+            builder = builder.identity(identity);
+            info!(cert = %cert_path, "mTLS client certificate loaded");
+        }
+
+        let client = builder.build()?;
 
         let db = match db_path {
             Some(path) => {

@@ -24,6 +24,9 @@ CPUQuota=80%
 
 # Hardening
 NoNewPrivileges=true
+# M5: empty bounding set — process cannot acquire any capabilities after exec.
+CapabilityBoundingSet=
+AmbientCapabilities=
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict

@@ -37,6 +37,19 @@ struct Args {
     #[arg(long, env = "AXION_QUEUE_DB")]
     db_path: Option<String>,
 
+    /// Path to CA certificate for server TLS verification (PEM).
+    /// If unset, the system CA store is used. Set to verify a self-signed server cert.
+    #[arg(long, env = "AXION_CA_CERT")]
+    ca_cert: Option<String>,
+
+    /// Path to client certificate for mTLS (PEM). Requires --client-key (L3).
+    #[arg(long, env = "AXION_CLIENT_CERT")]
+    client_cert: Option<String>,
+
+    /// Path to client private key for mTLS (PEM). Requires --client-cert (L3).
+    #[arg(long, env = "AXION_CLIENT_KEY")]
+    client_key: Option<String>,
+
     /// DDoS packet-rate threshold (pkts/s) before hard-threshold alert fires
     #[arg(long, default_value_t = 120.0)]
     pkt_rate_threshold: f64,
@@ -63,11 +76,18 @@ async fn main() -> Result<()> {
         "Axion capture agent starting"
     );
 
+    let tls = forwarder::TlsConfig {
+        ca_cert_path: args.ca_cert.clone(),
+        client_cert_path: args.client_cert.clone(),
+        client_key_path: args.client_key.clone(),
+    };
+
     let fwd = forwarder::Forwarder::new(
         args.server.clone(),
         args.api_key.clone(),
         args.node_id.clone(),
         args.db_path.clone(),
+        tls,
     )
     .await?;
 

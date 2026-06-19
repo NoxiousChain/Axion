@@ -12,6 +12,10 @@ from .detectors.ddos import DDoSDetector
 from .detectors.malware import MalwareDetector
 from .detectors.insider import InsiderDetector
 from .detectors.iot import IoTDetector
+from .detectors.portscan import PortScanDetector
+from .detectors.beaconing import BeaconingDetector
+from .detectors.lateral import LateralMovementDetector
+from .detectors.arp import ARPSpoofDetector
 
 def main():
     ap = argparse.ArgumentParser(description="Tactical Security Starter Agent")
@@ -69,6 +73,15 @@ def main():
     if cfg["malware"]["enable"]: MalwareDetector(bus, cfg, store, forwarder, siem=siem)
     if cfg["insider"]["enable"]: InsiderDetector(bus, cfg, store, forwarder, siem=siem)
     if cfg["iot"]["enable"]:     IoTDetector(bus, cfg, store, forwarder, siem=siem)
+
+    if cfg.get("portscan", {}).get("enable", True):
+        PortScanDetector(bus, cfg, store, forwarder, siem=siem)
+    if cfg.get("beaconing", {}).get("enable", True):
+        BeaconingDetector(bus, cfg, store, forwarder, siem=siem)
+    if cfg.get("lateral_movement", {}).get("enable", True):
+        LateralMovementDetector(bus, cfg, store, forwarder, siem=siem)
+    if cfg.get("arp", {}).get("enable", True):
+        ARPSpoofDetector(bus, cfg, store, forwarder, siem=siem)
 
     src = CaptureSource(
         mode=cfg["capture"]["mode"],

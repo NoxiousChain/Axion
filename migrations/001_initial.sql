@@ -7,15 +7,19 @@
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS users (
-    username           TEXT PRIMARY KEY,
-    password_hash      TEXT        NOT NULL,
-    role               TEXT        NOT NULL DEFAULT 'analyst'
-                           CHECK (role IN ('analyst','operator','admin')),
-    totp_secret        TEXT,
-    failed_login_count INTEGER     NOT NULL DEFAULT 0,
-    locked_until       TIMESTAMPTZ,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    username                TEXT PRIMARY KEY,
+    password_hash           TEXT        NOT NULL,
+    role                    TEXT        NOT NULL DEFAULT 'analyst'
+                                CHECK (role IN ('analyst','operator','admin')),
+    totp_secret             TEXT,
+    failed_login_count      INTEGER     NOT NULL DEFAULT 0,
+    locked_until            TIMESTAMPTZ,
+    sessions_invalidated_at TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Idempotent: add column if upgrading from a schema that predates H3.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_invalidated_at TIMESTAMPTZ;
 
 -- Bootstrap admin (password must be changed on first login)
 INSERT INTO users (username, password_hash, role)
@@ -81,15 +85,48 @@ CREATE INDEX IF NOT EXISTS audit_ts_idx     ON audit_log (ts DESC);
 CREATE INDEX IF NOT EXISTS audit_actor_idx  ON audit_log (actor);
 CREATE INDEX IF NOT EXISTS audit_action_idx ON audit_log (action);
 
--- Prevent modification or deletion of audit rows (immutable ledger)
-CREATE OR REPLACE RULE audit_no_update
-    AS ON UPDATE TO audit_log DO INSTEAD NOTHING;
-CREATE OR REPLACE RULE audit_no_delete
-    AS ON DELETE TO audit_log DO INSTEAD NOTHING;
+-- Prevent modification or deletion of audit rows (immutable ledger).
+-- Triggers raise a hard exception on any attempt; they fire even when called
+-- by the table owner, unlike RULE which is silently bypassed by superusers.
+CREATE OR REPLACE FUNCTION audit_log_prevent_change()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_log rows are immutable (action: %)', TG_OP;
+END;
+$$;
+
+DROP RULE IF EXISTS audit_no_update ON audit_log;
+DROP RULE IF EXISTS audit_no_delete ON audit_log;
+
+CREATE OR REPLACE TRIGGER trg_audit_no_update
+    BEFORE UPDATE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_prevent_change();
+
+CREATE OR REPLACE TRIGGER trg_audit_no_delete
+    BEFORE DELETE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_prevent_change();
 
 -- Retention helper view: alerts older than 90 days
 CREATE OR REPLACE VIEW alerts_to_archive AS
     SELECT * FROM alerts
     WHERE to_timestamp(ts) < NOW() - INTERVAL '90 days';
+
+-- Per-node API keys: each edge node gets its own key so a compromise of one
+-- node does not expose the shared master key or any other node (L2).
+CREATE TABLE IF NOT EXISTS node_keys (
+    node_id    TEXT PRIMARY KEY,
+    api_key    TEXT        NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS node_keys_api_key_idx ON node_keys (api_key);
+
+-- Persistent rate-limit store: survives restarts and is shared across server
+-- instances, closing the M4 gap in the previous in-memory sliding-window limiter.
+CREATE TABLE IF NOT EXISTS rate_limits (
+    limiter TEXT NOT NULL,
+    ip      TEXT NOT NULL,
+    ts      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS rate_limits_lookup ON rate_limits (limiter, ip, ts);
 
 COMMIT;

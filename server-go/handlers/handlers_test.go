@@ -78,8 +78,33 @@ func newRouter(t *testing.T, database *db.DB) (*gin.Engine, *handlers.Handler) {
 	api.POST("/users/:username/totp", middleware.RequireAdmin(), h.EnrolTOTP)
 	api.DELETE("/users/:username/totp", middleware.RequireAdmin(), h.DisableTOTP)
 	api.POST("/users/:username/unlock", middleware.RequireAdmin(), h.UnlockUser)
+	api.POST("/users/:username/revoke-sessions", middleware.RequireAdmin(), h.RevokeUserSessions)
 	api.GET("/audit", middleware.RequireAdmin(), h.ListAudit)
 	api.GET("/audit/verify", middleware.RequireAdmin(), h.VerifyAudit)
+
+	return r, h
+}
+
+// newRouterWithSessionCheck builds a router that wires in IsSessionValid so
+// that JWT tokens issued before a revocation event are rejected (H3).
+func newRouterWithSessionCheck(t *testing.T, database *db.DB) (*gin.Engine, *handlers.Handler) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	hub := handlers.NewHub()
+	go hub.Run()
+	h := handlers.New(database, testAPIKey, hub, nil)
+	getKey := func() string { return testAPIKey }
+	checker := middleware.SessionChecker(database.IsSessionValid)
+
+	r := gin.New()
+	r.POST("/api/login", h.Login)
+
+	authMW := middleware.Auth(getKey, checker)
+	api := r.Group("/api", authMW)
+	api.GET("/alerts", h.ListAlerts)
+	api.GET("/users", middleware.RequireAdmin(), h.ListUsers)
+	api.POST("/users", middleware.RequireAdmin(), h.CreateUser)
+	api.POST("/users/:username/revoke-sessions", middleware.RequireAdmin(), h.RevokeUserSessions)
 
 	return r, h
 }
@@ -715,5 +740,166 @@ func TestEntityTypeFallsBackToNodeID(t *testing.T) {
 	incident := inc["incident"].(map[string]any)
 	if incident["entity_type"] != "node_id" {
 		t.Errorf("entity_type fallback: want 'node_id', got %v", incident["entity_type"])
+	}
+}
+
+// ─── Session revocation (H3) ─────────────────────────────────────────────────
+
+// buildJWT creates a JWT signed with testAPIKey for the given username/role.
+func buildJWT(t *testing.T, sub, role string, exp time.Time) string {
+	t.Helper()
+	secret := pbkdf2.Key([]byte(testAPIKey), []byte("axion-jwt-v1"), 100_000, 32, sha256.New)
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  sub,
+		"role": role,
+		"exp":  exp.Unix(),
+		"iat":  time.Now().Unix(),
+	})
+	s, err := tok.SignedString(secret)
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	return s
+}
+
+func TestRevokeSessionsNotFound(t *testing.T) {
+	database := newTestDB(t)
+	r, _ := newRouter(t, database)
+	j := adminJWT(t)
+
+	w := do(t, r, "POST", "/api/users/ghost/revoke-sessions", nil, bearerHeader(j))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("revoke nonexistent user: want 404, got %d — %s", w.Code, w.Body)
+	}
+}
+
+func TestRevokeSessionsInvalidatesOldJWT(t *testing.T) {
+	database := newTestDB(t)
+	r, _ := newRouterWithSessionCheck(t, database)
+	adminTok := adminJWT(t)
+
+	// Create a regular user
+	do(t, r, "POST", "/api/users",
+		map[string]any{"username": "revokeuser", "password": "P@ssword123", "role": "analyst"},
+		bearerHeader(adminTok))
+
+	// Issue a JWT for revokeuser (iat = now)
+	oldTok := buildJWT(t, "revokeuser", "analyst", time.Now().Add(time.Hour))
+
+	// Old token works before revocation
+	w1 := do(t, r, "GET", "/api/alerts", nil, bearerHeader(oldTok))
+	if w1.Code != http.StatusOK {
+		t.Fatalf("before revoke: want 200, got %d", w1.Code)
+	}
+
+	// Revoke all sessions for revokeuser
+	wRev := do(t, r, "POST", "/api/users/revokeuser/revoke-sessions", nil, bearerHeader(adminTok))
+	if wRev.Code != http.StatusOK {
+		t.Fatalf("revoke sessions: want 200, got %d — %s", wRev.Code, wRev.Body)
+	}
+
+	// Old token must now be rejected
+	w2 := do(t, r, "GET", "/api/alerts", nil, bearerHeader(oldTok))
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("after revoke: want 401 for old token, got %d", w2.Code)
+	}
+}
+
+func TestRevokeSessionsNewJWTStillWorks(t *testing.T) {
+	database := newTestDB(t)
+	r, _ := newRouterWithSessionCheck(t, database)
+	adminTok := adminJWT(t)
+
+	do(t, r, "POST", "/api/users",
+		map[string]any{"username": "revokeuser2", "password": "P@ssword123", "role": "analyst"},
+		bearerHeader(adminTok))
+
+	// Revoke first
+	do(t, r, "POST", "/api/users/revokeuser2/revoke-sessions", nil, bearerHeader(adminTok))
+
+	// Issue a brand-new JWT (iat is after the revocation)
+	newTok := buildJWT(t, "revokeuser2", "analyst", time.Now().Add(time.Hour))
+
+	// New token must be accepted
+	w := do(t, r, "GET", "/api/alerts", nil, bearerHeader(newTok))
+	if w.Code != http.StatusOK {
+		t.Fatalf("new token after revoke: want 200, got %d", w.Code)
+	}
+}
+
+func TestRevokeSessionsRequiresAdmin(t *testing.T) {
+	database := newTestDB(t)
+	r, _ := newRouter(t, database)
+
+	// Operator-level machine token must not be allowed to revoke sessions
+	w := do(t, r, "POST", "/api/users/anyone/revoke-sessions", nil, machineHeader())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("machine revoke: want 403, got %d", w.Code)
+	}
+}
+
+// ─── Alert ingest rate limit (H2) ────────────────────────────────────────────
+
+func TestAlertIngestRateLimitEndpoint(t *testing.T) {
+	database := newTestDB(t)
+	gin.SetMode(gin.TestMode)
+	hub := handlers.NewHub()
+	go hub.Run()
+	h := handlers.New(database, testAPIKey, hub, nil)
+	getKey := func() string { return testAPIKey }
+
+	// Very tight limit: 3 requests per minute
+	r := gin.New()
+	authMW := middleware.Auth(getKey)
+	api := r.Group("/api", authMW)
+	api.POST("/alerts",
+		middleware.AlertIngestRateLimit(3, time.Minute),
+		middleware.RequireOperator(),
+		h.IngestAlert)
+
+	payload := map[string]any{
+		"detector": "test", "title": "t", "severity": "low",
+	}
+	for i := 0; i < 3; i++ {
+		w := do(t, r, "POST", "/api/alerts", payload, machineHeader())
+		if w.Code != http.StatusCreated {
+			t.Fatalf("attempt %d: want 201, got %d", i+1, w.Code)
+		}
+	}
+	// Fourth attempt must be rate-limited
+	w := do(t, r, "POST", "/api/alerts", payload, machineHeader())
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("over ingest limit: want 429, got %d", w.Code)
+	}
+}
+
+// ─── Security headers integration (H4) ───────────────────────────────────────
+
+func TestSecurityHeadersIntegration(t *testing.T) {
+	database := newTestDB(t)
+	gin.SetMode(gin.TestMode)
+	hub := handlers.NewHub()
+	go hub.Run()
+	h := handlers.New(database, testAPIKey, hub, nil)
+
+	r := gin.New()
+	r.Use(middleware.SecurityHeaders())
+	r.GET("/api/health", h.Health)
+
+	w := do(t, r, "GET", "/api/health", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health: want 200, got %d", w.Code)
+	}
+	for hdr, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"X-XSS-Protection":       "0",
+	} {
+		if got := w.Header().Get(hdr); got != want {
+			t.Errorf("%s: want %q, got %q", hdr, want, got)
+		}
+	}
+	if csp := w.Header().Get("Content-Security-Policy"); csp == "" {
+		t.Error("Content-Security-Policy header missing from health endpoint")
 	}
 }

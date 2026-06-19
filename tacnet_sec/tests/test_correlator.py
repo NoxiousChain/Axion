@@ -311,8 +311,8 @@ def analyst_client(api_mod_db):
     """TestClient authenticated as an analyst user (read-only role)."""
     from fastapi.testclient import TestClient
     from tacnet_sec.server.auth import create_token, hash_password
-    import sqlite3, time
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    import time
+    conn = api_mod_db._conn()
     conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
         ("analyst-tester", hash_password("testpass1"), "analyst", time.time()),
@@ -540,23 +540,27 @@ def test_machine_token_can_ingest_alert(api_mod_db):
 def test_audit_log_records_login_success(api_mod_db):
     """A successful login must appear in the audit_log table."""
     from fastapi.testclient import TestClient
-    import sqlite3
-    # Give admin a known password.
     from tacnet_sec.server.auth import hash_password
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
-    conn.execute("UPDATE users SET password_hash=? WHERE username='admin'",
-                 (hash_password("adminpass"),))
-    conn.commit()
-    conn.close()
+    import time
 
     with TestClient(api_mod_db.app) as client:
+        # Create test user inside the started context so the startup event
+        # cannot overwrite its password.
+        conn = api_mod_db._conn()
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
+            ("audit-login-tester", hash_password("auditpass"), "analyst", time.time()),
+        )
+        conn.commit()
+        conn.close()
+
         client.post("/api/login", json={
-            "username": "admin", "password": "adminpass", "api_key": _TEST_API_KEY,
+            "username": "audit-login-tester", "password": "auditpass", "api_key": _TEST_API_KEY,
         })
 
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     row = conn.execute(
-        "SELECT action FROM audit_log WHERE actor='admin' AND action='login_success'"
+        "SELECT action FROM audit_log WHERE actor='audit-login-tester' AND action='login_success'"
     ).fetchone()
     conn.close()
     assert row is not None
@@ -565,13 +569,12 @@ def test_audit_log_records_login_success(api_mod_db):
 def test_audit_log_records_login_failure(api_mod_db):
     """A failed login must appear in the audit_log table."""
     from fastapi.testclient import TestClient
-    import sqlite3
     with TestClient(api_mod_db.app) as client:
         client.post("/api/login", json={
             "username": "admin", "password": "wrongpass", "api_key": _TEST_API_KEY,
         })
 
-    conn = sqlite3.connect(api_mod_db.DB_PATH)
+    conn = api_mod_db._conn()
     row = conn.execute(
         "SELECT action FROM audit_log WHERE actor='admin' AND action='login_failed'"
     ).fetchone()
@@ -581,7 +584,6 @@ def test_audit_log_records_login_failure(api_mod_db):
 
 def test_audit_log_records_ack(api_client):
     """Acknowledging an incident must produce an audit_log entry."""
-    import sqlite3
     import tacnet_sec.server.api as api_mod
     r = api_client.post("/api/alerts", json={
         "ts": 11_000_000.0, "detector": "D", "severity": "high",
@@ -590,7 +592,7 @@ def test_audit_log_records_ack(api_client):
     inc_id = r["incident_id"]
     api_client.post(f"/api/incidents/{inc_id}/ack", json={"note": "resolved"})
 
-    conn = sqlite3.connect(api_mod.DB_PATH)
+    conn = api_mod._conn()
     row = conn.execute(
         "SELECT * FROM audit_log WHERE action='ack_incident' AND target=?",
         (str(inc_id),),

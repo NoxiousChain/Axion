@@ -74,16 +74,24 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 export function connectWS(jwt: string): void {
   if (ws) ws.close();
 
+  // C2: Token is sent as the first WebSocket message, not in the URL.
+  // This prevents JWT leakage in server access logs and browser history.
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const url   = `${proto}://${location.host}/api/ws?token=${jwt}`;
+  const url   = `${proto}://${location.host}/api/ws`;
 
   wsStatus.set('connecting');
   ws = new WebSocket(url);
 
-  ws.onopen = () => wsStatus.set('connected');
+  ws.onopen = () => {
+    ws?.send(JSON.stringify({ type: 'auth', token: jwt }));
+  };
 
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
+    if (msg.type === 'auth_ok') {
+      wsStatus.set('connected');
+      return;
+    }
     if (msg.type === 'alert') {
       alerts.update((prev) => [msg as Alert, ...prev].slice(0, 500));
     }
@@ -91,7 +99,6 @@ export function connectWS(jwt: string): void {
 
   ws.onclose = () => {
     wsStatus.set('disconnected');
-    // Exponential back-off reconnect
     reconnectTimer = setTimeout(() => connectWS(jwt), 3000);
   };
 

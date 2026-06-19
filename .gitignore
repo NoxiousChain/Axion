@@ -49,5 +49,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# ── Local dev toolchain (installed by scripts/setup-dev.sh) ─────────────────
+# Go, Rust, gopath cache — platform-specific binaries, never commit.
+tools/
+
 # ── AI tooling ─────────────────────────────────────────────────────────────
 CLAUDE.md

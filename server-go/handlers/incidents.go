@@ -118,7 +118,7 @@ func (h *Handler) correlate(ctx context.Context, alertID int64, p *models.AlertP
 		return nil
 	}
 
-	windowStart := p.Ts - 300 // 5-minute window
+	windowStart := p.Ts - h.correlateWindow // M6: configurable via AXION_CORRELATE_WINDOW_SECONDS
 
 	var incidentID int64
 	err := h.db.Pool.QueryRow(ctx,

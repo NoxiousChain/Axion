@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/axion/server/db"
 	"github.com/axion/server/middleware"
 	"github.com/axion/server/models"
 	"github.com/gin-gonic/gin"
@@ -101,10 +102,12 @@ func (h *Handler) Login(c *gin.Context) {
 		req.Username,
 	)
 
+	now := time.Now()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  req.Username,
 		"role": string(role),
-		"exp":  time.Now().Add(8 * time.Hour).Unix(),
+		"iat":  now.Unix(),
+		"exp":  now.Add(8 * time.Hour).Unix(),
 	})
 	signed, err := token.SignedString(jwtSecret(h.getKey()))
 	if err != nil {
@@ -246,6 +249,22 @@ func (h *Handler) DisableTOTP(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"detail": "TOTP disabled"})
 }
 
+// RevokeUserSessions — POST /api/users/:username/revoke-sessions  (admin only)
+// Sets sessions_invalidated_at = NOW() so all JWTs issued before this moment
+// will be rejected on the next auth check (H3).
+func (h *Handler) RevokeUserSessions(c *gin.Context) {
+	username := c.Param("username")
+	actor, _ := c.Get(middleware.CtxActor)
+	ctx := c.Request.Context()
+
+	if err := h.db.RevokeUserSessions(ctx, username); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "user not found"})
+		return
+	}
+	h.db.Audit(ctx, fmt.Sprint(actor), "sessions_revoked", username, "")
+	c.JSON(http.StatusOK, gin.H{"detail": "all sessions revoked"})
+}
+
 func (h *Handler) UnlockUser(c *gin.Context) {
 	username := c.Param("username")
 	actor, _ := c.Get(middleware.CtxActor)
@@ -261,6 +280,62 @@ func (h *Handler) UnlockUser(c *gin.Context) {
 	}
 	h.db.Audit(ctx, fmt.Sprint(actor), "account_unlocked", username, "")
 	c.JSON(http.StatusOK, gin.H{"detail": "unlocked"})
+}
+
+// ─── Per-node API key management (L2) ────────────────────────────────────────
+
+// CreateNodeKey — POST /api/nodes  (admin only)
+// Creates or regenerates the API key for an edge node. The plaintext key is
+// returned once — it cannot be retrieved again. Rotates automatically if called
+// again for the same node_id.
+func (h *Handler) CreateNodeKey(c *gin.Context) {
+	var req struct {
+		NodeID string `json:"node_id" binding:"required,max=64"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	actor, _ := c.Get(middleware.CtxActor)
+	ctx := c.Request.Context()
+
+	key, err := h.db.CreateNodeKey(ctx, req.NodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+
+	h.db.Audit(ctx, fmt.Sprint(actor), "node_key_created", req.NodeID, "")
+	c.JSON(http.StatusCreated, gin.H{"node_id": req.NodeID, "api_key": key})
+}
+
+// ListNodeKeys — GET /api/nodes  (admin only)
+func (h *Handler) ListNodeKeys(c *gin.Context) {
+	keys, err := h.db.ListNodeKeys(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	if keys == nil {
+		keys = []db.NodeKey{}
+	}
+	c.JSON(http.StatusOK, keys)
+}
+
+// DeleteNodeKey — DELETE /api/nodes/:node_id  (admin only)
+// Immediately revokes the node's API key.
+func (h *Handler) DeleteNodeKey(c *gin.Context) {
+	nodeID := c.Param("node_id")
+	actor, _ := c.Get(middleware.CtxActor)
+	ctx := c.Request.Context()
+
+	if err := h.db.DeleteNodeKey(ctx, nodeID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "node not found"})
+		return
+	}
+
+	h.db.Audit(ctx, fmt.Sprint(actor), "node_key_deleted", nodeID, "")
+	c.JSON(http.StatusOK, gin.H{"detail": "deleted"})
 }
 
 // ─── Password helpers ─────────────────────────────────────────────────────────

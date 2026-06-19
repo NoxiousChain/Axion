@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/axion/server/middleware"
 	"github.com/gin-gonic/gin"
@@ -29,7 +30,6 @@ func (hub *Hub) Run() {
 	for msg := range hub.send {
 		hub.mu.RLock()
 		for conn := range hub.clients {
-			// Non-blocking write; slow clients are dropped
 			conn.WriteJSON(msg) //nolint:errcheck
 		}
 		hub.mu.RUnlock()
@@ -39,7 +39,7 @@ func (hub *Hub) Run() {
 func (hub *Hub) Broadcast(msg any) {
 	select {
 	case hub.send <- msg:
-	default: // drop if channel full
+	default:
 	}
 }
 
@@ -56,17 +56,15 @@ func (hub *Hub) unregister(c *websocket.Conn) {
 }
 
 // wsUpgrader builds an upgrader that validates the Origin header against the
-// configured allowlist. If the allowlist is empty, only same-host connections
-// are accepted (safe default for the dashboard served on the same origin).
+// configured allowlist. If empty, only same-host connections are accepted.
 func (h *Handler) wsUpgrader() websocket.Upgrader {
 	return websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
 			if origin == "" {
-				return true // non-browser client (e.g. curl, test harness)
+				return true // non-browser client
 			}
 			if len(h.corsOrigins) == 0 {
-				// No explicit allowlist: permit same-host only.
 				host := origin
 				if i := strings.Index(origin, "://"); i >= 0 {
 					host = origin[i+3:]
@@ -83,22 +81,50 @@ func (h *Handler) wsUpgrader() websocket.Upgrader {
 	}
 }
 
-// WebSocket — GET /api/ws?token=JWT
+// WebSocket — GET /api/ws
+//
+// Authentication is performed via the first message rather than a query-string
+// token, preventing JWT leakage in server access logs and browser history (C2).
+//
+// Protocol:
+//   client → server: {"type":"auth","token":"<JWT>"}
+//   server → client: {"type":"auth_ok"}   — then normal event stream begins
+//   server closes with ClosePolicyViolation if auth fails or times out.
 func (h *Handler) WebSocket(c *gin.Context) {
-	actor, _ := c.Get(middleware.CtxActor)
-	ctx := c.Request.Context()
-
 	upgrader := h.wsUpgrader()
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+
+	// Require auth message within 10 seconds of connect.
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second)) //nolint:errcheck
+	var authMsg struct {
+		Type  string `json:"type"`
+		Token string `json:"token"`
+	}
+	if err := conn.ReadJSON(&authMsg); err != nil || authMsg.Type != "auth" || authMsg.Token == "" {
+		conn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "auth required"))
+		conn.Close()
+		return
+	}
+	conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+
+	_, actor, ok := middleware.ValidateJWT(h.getKey(), authMsg.Token)
+	if !ok {
+		conn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "invalid token"))
+		conn.Close()
+		return
+	}
+
+	conn.WriteJSON(gin.H{"type": "auth_ok"}) //nolint:errcheck
 
 	h.hub.register(conn)
-	h.db.Audit(ctx, fmt.Sprint(actor), "ws_connect", "", "")
+	ctx := c.Request.Context()
+	h.db.Audit(ctx, fmt.Sprint(actor), "ws_connect", "", "") //nolint:errcheck
 
-	// Block until client disconnects (read loop)
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			break
@@ -106,5 +132,6 @@ func (h *Handler) WebSocket(c *gin.Context) {
 	}
 
 	h.hub.unregister(conn)
-	h.db.Audit(ctx, fmt.Sprint(actor), "ws_disconnect", "", "")
+	conn.Close()
+	h.db.Audit(ctx, fmt.Sprint(actor), "ws_disconnect", "", "") //nolint:errcheck
 }

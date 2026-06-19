@@ -47,7 +47,10 @@ services:
     environment:
       AXION_API_KEY:      ${AXION_API_KEY}
       AXION_ADMIN_PASSWORD: ${AXION_ADMIN_PASSWORD}
-      DATABASE_URL:       postgres://axion:${POSTGRES_PASSWORD}@postgres:5432/axion?sslmode=disable
+      # C1: Production deployments MUST set POSTGRES_SSLMODE=require (or verify-full).
+      # sslmode=disable is only acceptable when postgres runs on the same Docker network
+      # with no external exposure. For any remote or shared DB, use require/verify-full.
+      DATABASE_URL:       postgres://axion:${POSTGRES_PASSWORD}@postgres:5432/axion?sslmode=${POSTGRES_SSLMODE:-disable}
       AXION_TLS_CERT:     ${AXION_TLS_CERT:-}
       AXION_TLS_KEY:      ${AXION_TLS_KEY:-}
       AXION_CORS_ORIGINS: ${AXION_CORS_ORIGINS:-}
@@ -55,6 +58,12 @@ services:
     volumes:
       - ./certs:/certs:ro
       - ./dashboard/build:/app/dashboard/build:ro
+    # M5: drop all Linux capabilities and prevent privilege escalation.
+    # The Go server binds to port 8000 (>1024) so NET_BIND_SERVICE is not required.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/api/health"]
       interval: 30s
