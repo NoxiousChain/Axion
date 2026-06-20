@@ -3,8 +3,8 @@ package db_test
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/axion/server/db"
 )
@@ -94,22 +94,50 @@ func TestAuditRowsAreImmutable(t *testing.T) {
 	d.SetAPIKey("test-key")
 	ctx := context.Background()
 
-	d.Audit(ctx, "alice", "login_success", "", "")
-
-	// PG rule blocks update — UPDATE returns 0 rows affected, no error
-	ct, err := d.Pool.Exec(ctx,
-		`UPDATE audit_log SET actor = 'hacked' WHERE actor = 'alice'`)
+	// Use an explicit transaction so the RowExclusiveLock held by the INSERT
+	// blocks concurrent TRUNCATEs (from parallel package test cleanups) for the
+	// duration of the INSERT → UPDATE → SELECT sequence.
+	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
-		t.Logf("update returned error (expected): %v", err)
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	ts := float64(time.Now().UnixMicro()) / 1e6
+	hmac := d.AuditHMAC(ts, "alice", "login_success", "", "")
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO audit_log (ts, actor, action, target, detail, row_hmac)
+		 VALUES ($1, 'alice', 'login_success', '', '', $2)`, ts, hmac); err != nil {
+		t.Fatalf("audit write: %v", err)
+	}
+
+	// SAVEPOINT before the UPDATE: the BEFORE UPDATE trigger raises an exception
+	// which puts the transaction into PostgreSQL's 'E' (error) state; rolling back
+	// to the savepoint restores it to a usable state without releasing the table lock.
+	if _, err := tx.Exec(ctx, `SAVEPOINT before_update`); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+
+	ct, updErr := tx.Exec(ctx, `UPDATE audit_log SET actor = 'hacked' WHERE actor = 'alice'`)
+	if updErr != nil {
+		t.Logf("update returned error (expected): %v", updErr)
 	}
 	if ct.RowsAffected() > 0 {
 		t.Error("audit rows should be immutable — UPDATE should have no effect")
 	}
 
+	if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT before_update`); err != nil {
+		t.Fatalf("rollback to savepoint: %v", err)
+	}
+
 	var actor string
-	d.Pool.QueryRow(ctx, `SELECT actor FROM audit_log WHERE actor = 'alice' LIMIT 1`).Scan(&actor)
-	if !strings.Contains(actor, "alice") {
-		t.Error("actor was modified despite immutability rule")
+	if err := tx.QueryRow(ctx,
+		`SELECT actor FROM audit_log WHERE actor = 'alice' LIMIT 1`,
+	).Scan(&actor); err != nil {
+		t.Fatalf("SELECT after UPDATE: %v", err)
+	}
+	if actor != "alice" {
+		t.Errorf("actor modified despite immutability rule: got %q", actor)
 	}
 }
 
