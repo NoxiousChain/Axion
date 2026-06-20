@@ -101,7 +101,9 @@ func (d *DB) IsSessionValid(ctx context.Context, username string, issuedAt time.
 	if invalidatedAt == nil {
 		return true
 	}
-	return issuedAt.After(*invalidatedAt)
+	// JWT iat is second-precision; truncate invalidatedAt to the same granularity
+	// so a token issued in the same second as revocation is not falsely rejected.
+	return !issuedAt.Before(invalidatedAt.Truncate(time.Second))
 }
 
 // AllowRateLimit checks and records a rate-limit attempt in Postgres.

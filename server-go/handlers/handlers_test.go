@@ -745,15 +745,21 @@ func TestEntityTypeFallsBackToNodeID(t *testing.T) {
 
 // ─── Session revocation (H3) ─────────────────────────────────────────────────
 
-// buildJWT creates a JWT signed with testAPIKey for the given username/role.
+// buildJWT creates a JWT signed with testAPIKey for the given username/role with iat=now.
 func buildJWT(t *testing.T, sub, role string, exp time.Time) string {
+	return buildJWTAt(t, sub, role, exp, time.Now())
+}
+
+// buildJWTAt creates a JWT with an explicit iat, allowing tests to simulate tokens
+// that were issued at a specific point in time relative to revocation events.
+func buildJWTAt(t *testing.T, sub, role string, exp, iat time.Time) string {
 	t.Helper()
 	secret := pbkdf2.Key([]byte(testAPIKey), []byte("axion-jwt-v1"), 100_000, 32, sha256.New)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  sub,
 		"role": role,
 		"exp":  exp.Unix(),
-		"iat":  time.Now().Unix(),
+		"iat":  iat.Unix(),
 	})
 	s, err := tok.SignedString(secret)
 	if err != nil {
@@ -783,8 +789,8 @@ func TestRevokeSessionsInvalidatesOldJWT(t *testing.T) {
 		map[string]any{"username": "revokeuser", "password": "P@ssword123", "role": "analyst"},
 		bearerHeader(adminTok))
 
-	// Issue a JWT for revokeuser (iat = now)
-	oldTok := buildJWT(t, "revokeuser", "analyst", time.Now().Add(time.Hour))
+	// Issue a JWT with iat 2 seconds in the past so it clearly predates the revocation.
+	oldTok := buildJWTAt(t, "revokeuser", "analyst", time.Now().Add(time.Hour), time.Now().Add(-2*time.Second))
 
 	// Old token works before revocation
 	w1 := do(t, r, "GET", "/api/alerts", nil, bearerHeader(oldTok))
